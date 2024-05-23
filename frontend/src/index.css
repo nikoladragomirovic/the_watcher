@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+body,
+html {
+  font-family: "Dosis", sans-serif;
+}
