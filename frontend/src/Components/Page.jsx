@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from "react";
 
 const Page = ({ setLoggedIn }) => {
-  const [photos, setPhotos] = useState([]);
+  const [cameras, setCameras] = useState([]);
   const [settings, setSettings] = useState(false);
 
   useEffect(() => {
-    async function fetchphotos() {
+    async function fetchCameras() {
       try {
         const response = await fetch("http://127.0.0.1:5000/frames", {
           method: "POST",
@@ -19,16 +19,16 @@ const Page = ({ setLoggedIn }) => {
         });
         if (response.ok) {
           const data = await response.json();
-          setPhotos(data);
+          setCameras(data);
         } else {
-          console.error("Failed to fetch photos");
+          console.error("Failed to fetch cameras");
         }
       } catch (error) {
         console.error("Error:", error);
       }
     }
 
-    fetchphotos();
+    fetchCameras();
   }, []);
 
   const handleLogOut = async (e) => {
@@ -94,19 +94,19 @@ const Page = ({ setLoggedIn }) => {
           </div>
         </div>
       </div>
-      <div className="pt-20 grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
-        {photos.map((photo, index) => (
-          <div
-            key={index}
-            className="border border-gray-500 p-5 m-4 bg-gray-50 rounded-3xl"
-          >
-            <img key={index} src={photo.url} alt={`Image ${index}`} />
-            <p>{photo.camera}</p>
-            <p>{photo.time}</p>
-            <div className="flex flex-row justify-start space-x-6 text-lg items-start"></div>
+      {cameras.map((camera, index) => (
+        <div className="pt-32">
+          <p>{camera.name}</p>
+          <div className="grid grid-cols-2 gap-4">
+            {camera.images.map((image, index) => (
+              <div>
+                <img className="size-64" src={image.url}></img>
+                <p>{image.time}</p>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 };

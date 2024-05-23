@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from minio import Minio
 from datetime import datetime
@@ -82,16 +82,19 @@ def get_frames():
         return jsonify({'error': 'Invalid session token'}), 401
     
     cameras = get_cameras(username)
-    images = []
+    data = []
 
     for camera in cameras:
         objects = minio_client.list_objects(str(camera), recursive=True)
+        camera_object = {"name": camera, "images": []}
 
         for obj in objects:
             url = minio_client.presigned_get_object(str(camera), obj.object_name)
-            images.append({"url": url, "camera": camera, "time": obj.object_name.split('.')[0]})
+            camera_object['images'].append({"url": url, "time": obj.object_name.split('.')[0]})
+
+        data.append(camera_object)
     
-    return jsonify(images)
+    return jsonify(data)
     
 @app.route('/register', methods=['POST'])
 def register():
