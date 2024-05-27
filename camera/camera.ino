@@ -1,10 +1,9 @@
-
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
 #include "esp_camera.h"
+#include "fd_forward.h"  // Face detection header
+#include "fr_forward.h"  // Face recognition header
+#include "esp_log.h"
 
 const char* ssid = "Meda";
 const char* password = "bojananikola";
@@ -34,11 +33,11 @@ WiFiClient client;
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-const int timerInterval = 10000;
+const int timerInterval = 1000;
 unsigned long previousMillis = 0;
+mtmn_config_t mtmn_config = {0};
 
 void setup() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
   Serial.begin(115200);
 
   WiFi.mode(WIFI_STA);
@@ -74,10 +73,9 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 16000000;
-  config.pixel_format = PIXFORMAT_JPEG;
+  config.pixel_format = PIXFORMAT_JPEG; // Use JPEG for sending photos
 
-  // init with high specs to pre-allocate larger buffers
-  if(psramFound()){
+  if (psramFound()) {
     config.frame_size = FRAMESIZE_SVGA;
     config.jpeg_quality = 10;
     config.fb_count = 2;
@@ -86,6 +84,8 @@ void setup() {
     config.jpeg_quality = 12;
     config.fb_count = 1;
   }
+
+  mtmn_config = mtmn_init_config();
   
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -93,30 +93,59 @@ void setup() {
     delay(1000);
     ESP.restart();
   }
-
-  sendPhoto(); 
 }
 
 void loop() {
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= timerInterval) {
-    sendPhoto();
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) {
+      Serial.printf("Captured image: %d x %d, length: %d\n", fb->width, fb->height, fb->len);
+      if (faceDetected(fb)) {
+        sendPhoto(fb);
+      }
+      esp_camera_fb_return(fb);
+    } else {
+      Serial.println("Camera capture failed");
+    }
     previousMillis = currentMillis;
   }
 }
 
-String sendPhoto() {
+bool faceDetected(camera_fb_t *fb) {
+  dl_matrix3du_t *image_matrix = dl_matrix3du_alloc(1, fb->width, fb->height, 3);
+  if (!image_matrix) {
+    Serial.println("dl_matrix3du_alloc failed");
+    return false;
+  }
+
+  fmt2rgb888(fb->buf, fb->len, fb->format, image_matrix->item);
+
+  box_array_t *faces = face_detect(image_matrix, &mtmn_config);
+
+  if (faces) {
+    Serial.printf("Faces detected: %d\n", faces->len);
+  } else {
+    Serial.println("No faces detected");
+  }
+
+  bool detected = faces && faces->len > 0;
+
+  if (faces) {
+    dl_lib_free(faces->score);
+    dl_lib_free(faces->box);
+    dl_lib_free(faces->landmark);
+    dl_lib_free(faces);
+  }
+
+  dl_matrix3du_free(image_matrix);
+  return detected;
+}
+
+void sendPhoto(camera_fb_t *fb) {
   String getAll;
   String getBody;
 
-  camera_fb_t * fb = NULL;
-  fb = esp_camera_fb_get();
-  if(!fb) {
-    Serial.println("Camera capture failed");
-    delay(1000);
-    ESP.restart();
-  }
-  
   Serial.println("Connecting to server: " + serverName);
   
   if (client.connect(serverName.c_str(), serverPort)) {
@@ -145,46 +174,47 @@ String sendPhoto() {
   
     uint8_t *fbBuf = fb->buf;
     size_t fbLen = fb->len;
-    for (size_t n=0; n<fbLen; n=n+1024) {
-      if (n+1024 < fbLen) {
+    for (size_t n = 0; n < fbLen; n += 1024) {
+      if (n + 1024 < fbLen) {
         client.write(fbBuf, 1024);
         fbBuf += 1024;
-      }
-      else if (fbLen%1024>0) {
-        size_t remainder = fbLen%1024;
+      } else if (fbLen % 1024 > 0) {
+        size_t remainder = fbLen % 1024;
         client.write(fbBuf, remainder);
       }
     }   
     client.print(tail);
     
-    esp_camera_fb_return(fb);
-    
-    int timoutTimer = 10000;
+    int timeoutTimer = 10000;
     long startTimer = millis();
     boolean state = false;
     
-    while ((startTimer + timoutTimer) > millis()) {
+    while ((startTimer + timeoutTimer) > millis()) {
       Serial.print(".");
       delay(100);      
       while (client.available()) {
         char c = client.read();
         if (c == '\n') {
-          if (getAll.length()==0) { state=true; }
+          if (getAll.length() == 0) {
+            state = true;
+          }
           getAll = "";
+        } else if (c != '\r') {
+          getAll += String(c);
         }
-        else if (c != '\r') { getAll += String(c); }
-        if (state==true) { getBody += String(c); }
+        if (state == true) {
+          getBody += String(c);
+        }
         startTimer = millis();
       }
-      if (getBody.length()>0) { break; }
+      if (getBody.length() > 0) {
+        break;
+      }
     }
     Serial.println();
     client.stop();
     Serial.println(getBody);
+  } else {
+    Serial.println("Connection to " + serverName + " failed.");
   }
-  else {
-    getBody = "Connection to " + serverName +  " failed.";
-    Serial.println(getBody);
-  }
-  return getBody;
 }
