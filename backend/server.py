@@ -1,19 +1,23 @@
 from flask import Flask, request, jsonify, g
 from pymongo import MongoClient
 from minio import Minio
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_cors import CORS
 import bcrypt
 import secrets
 import string
+import requests
 import os
 import face_recognition
 import numpy as np
+from io import BytesIO
 import cv2
 from functools import wraps
 
 app = Flask(__name__)
 CORS(app, origins='*')
+
+# GLOBALS #
 
 minio_client = Minio("127.0.0.1:9000",
                      access_key="minioadmin",
@@ -22,6 +26,12 @@ minio_client = Minio("127.0.0.1:9000",
 
 mongo_client = MongoClient('mongodb://localhost:27017/')
 database = mongo_client['the_watcher']
+
+telegram_bot_token = os.environ.get('THE_WATCHER_TOKEN')
+
+# END GLOBALS #
+
+# HELPER FUNCTIONS #
 
 def generate_session_token():
     alphabet = string.ascii_letters + string.digits
@@ -34,6 +44,24 @@ def check_session_token(username, session_token):
 def get_cameras(username):
     user = database['accounts'].find_one({'username': username})
     return user.get('cameras', 'Field not found') if user else 'Field not found'
+
+def send_telegram_notification(chat_id, text, image_bytes):
+    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendPhoto"
+
+    files = {
+        'photo': ('image.jpg', image_bytes, 'image/jpeg')
+    }
+    data = {
+        'chat_id': chat_id,
+        'caption': text
+    }
+
+    response = requests.post(url, files=files, data=data)
+    return response.json()
+
+# END HELPER FUNCTIONS #
+
+# DECORATORS #
 
 def auth_required(f):
     @wraps(f)
@@ -51,19 +79,82 @@ def auth_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# END DECORATORS #
+
+# UPLOAD FUNCTION #
+    
+@app.route('/upload', methods=['POST'])
+def upload_image():
+    camera_id = request.form.get('camera_id')
+    file = request.files['image']
+
+    encodings = []
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    filename = f"{timestamp}.jpg"
+
+    camera = database['accounts'].find_one({'cameras': {'$elemMatch': {'id': camera_id}}})
+    chat_id = camera['chat_id']
+
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image part'}), 400
+    
+    
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    if camera: 
+        faces = camera.get('faces', [])
+        encodings = [face['encoding'] for face in faces]
+
+    try:
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
+
+        image_bytes = file.read()
+        image_np = np.frombuffer(image_bytes, np.uint8)
+        image_np = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+
+        file.seek(0)
+
+        unknown = face_recognition.face_encodings(image_np)
+        results = face_recognition.compare_faces(np.array(encodings), unknown)
+
+        if not minio_client.bucket_exists(camera_id):
+            minio_client.make_bucket(camera_id)
+
+        if True in results:
+            recognized_face = camera['faces'][results.index(True)]['name']
+            send_telegram_notification(chat_id, f"{recognized_face} is at your door!", image_bytes)
+            return jsonify({'message': 'Face recognized, no need for upload'}), 200
+
+        minio_client.put_object(camera_id, filename, file, file_size)
+        send_telegram_notification(chat_id, "Someone at your door, visit http://127.0.0.1:3000 to check it out!", image_bytes)
+        return jsonify({'message': 'Image uploaded successfully', 'filename': filename}), 200
+    except Exception as e:
+        return str(e)
+    
+# END UPLOAD FUNCTION #
+
+# CAMERA MANAGMENT ROUTES #
+
 @app.route('/enroll', methods=['POST'])
 @auth_required
-def register_camera():
+def enroll_camera():
     camera_id = request.form.get('camera_id')
     camera_name = request.form.get('name')
 
-    existing_camera = database['accounts'].find_one({'cameras.id': camera_id})
-    if existing_camera:
-        return jsonify({'message': 'Camera already registered to an account'}), 401
-
     user = database['accounts'].find_one({'username': g.username})
+    existing_camera = database['accounts'].find_one({'cameras.id': camera_id})
+
     if any(camera['id'] == camera_id for camera in user['cameras']):
-        return jsonify({'message': 'Camera already registered to your account'}), 401
+        return jsonify({'message': 'Camera already registered to your account'}), 409
+    
+    if existing_camera:
+        return jsonify({'message': 'Camera already registered to an account'}), 303
+    
+    if minio_client.bucket_exists(camera_id) is False:
+        return jsonify({'message': 'Camera with this id does not exist'}), 401
 
     result = database['accounts'].update_one(
         {'username': g.username},
@@ -76,9 +167,9 @@ def register_camera():
         return jsonify({'message': 'Failed to add camera'}), 500
 
 
-@app.route('/delete', methods=['POST'])
+@app.route('/exclude', methods=['POST'])
 @auth_required
-def delete_camera():
+def exclude_camera():
     camera_id = request.form.get('camera_id')
 
     result = database['accounts'].update_one(
@@ -108,90 +199,86 @@ def rename_camera():
     else:
         return jsonify({'message': 'Camera not found or name unchanged'}), 404
     
-@app.route('/upload', methods=['POST'])
-def upload_image():
+# END CAMERA MANAGMENT ROUTES #
+
+# FRAME MANAGMENT ROUTES #
+    
+@app.route('/clear', methods=['POST'])
+@auth_required
+def clear_picture():
     camera_id = request.form.get('camera_id')
+    image_name = request.form.get('image_name')
 
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image part'}), 400
+    minio_client.remove_object(camera_id, image_name)
+
+    return jsonify({'message': 'Successfully deleted image'})
+
+@app.route('/frames', methods=['POST'])
+@auth_required
+def get_frames():
+    cameras = get_cameras(g.username)
+    data = []
+
+    for camera in cameras:
+        id = camera['id']
+        objects = minio_client.list_objects(str(id), recursive=True)
+
+        for obj in objects:
+            url = minio_client.presigned_get_object(str(id), obj.object_name, expires=timedelta(hours=1),)
+            data.append({"url": url, "date": obj.object_name.split('.')[0].split(' ')[0],"time": obj.object_name.split('.')[0].split(' ')[1], "cameraName": camera['name'], 'cameraId': id, 'name': obj.object_name})
     
-    file = request.files['image']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-    
-    faces = database['accounts'].find_one({'cameras': camera_id}).get('faces', [])
+    return jsonify(data)
 
-    encodings = [face['encoding'] for face in faces]
+# END FRAME MANAMENT ROUTES #
 
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    filename = f"{timestamp}.jpg"
+# FACE MANAGMENT ROUTES #
 
-    try:
-        file.seek(0, os.SEEK_END)
-        file_size = file.tell()
-        file.seek(0)
-
-        image_bytes = file.read()
-        image_np = np.frombuffer(image_bytes, np.uint8)
-        image_np = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
-
-        file.seek(0)
-
-        unknown = face_recognition.face_encodings(image_np)
-
-        results = face_recognition.compare_faces(np.array(encodings), unknown)
-
-        if not minio_client.bucket_exists(camera_id):
-            minio_client.make_bucket(camera_id)
-
-        if True in results:
-            return jsonify({'message': 'Face recognized, no need for upload'}), 200
-
-        minio_client.put_object(camera_id, filename, file, file_size)
-        return jsonify({'message': 'Image uploaded successfully', 'filename': filename}), 200
-    except Exception as e:
-        return str(e)
-    
 @app.route('/save', methods=['POST'])
 @auth_required
 def save_face():
     name = request.form.get('name')
-
-    if 'photo' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
-
-    file = request.files['photo']
-
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+    camera_id = request.form.get('camera_id')
+    frame_name = request.form.get('frame_name')
 
     try:
-        image = face_recognition.load_image_file(file)
-
+        response = minio_client.get_object(camera_id, frame_name)
+        
+        image_bytes = response.read()
+        response.close()
+        response.release_conn()
+        
+        image_np = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+        
         face_encodings = face_recognition.face_encodings(image)
-
+        
         if len(face_encodings) == 0:
             return jsonify({'error': 'No faces found in the image'}), 400
 
         face_encoding = face_encodings[0]
-
         face_encoding_list = face_encoding.tolist()
-
-        saved_face = {"name": name, "encoding": face_encoding_list}
 
         if database['accounts'].find_one({'username': g.username, 'faces.name': name}) is not None:
             return jsonify({"message": "Name already exists"}), 409
+
+        user = database['accounts'].find_one({'username': g.username})
+        existing_encodings = [face['encoding'] for face in user.get('faces', [])]
+
+        matches = face_recognition.compare_faces(np.array(existing_encodings), face_encoding)
+
+        if True in matches:
+            return jsonify({"message": "Face encoding already exists"}), 303
+
+        saved_face = {"name": name, "encoding": face_encoding_list}
 
         result = database['accounts'].update_one(
             {'username': g.username},
             {'$push': {'faces': saved_face}}
         )
 
-        return jsonify({"message": "Face saved succesfully"}), 200
+        return jsonify({"message": "Face saved successfully"}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
 
 @app.route('/delete', methods=['POST'])
 @auth_required
@@ -206,8 +293,12 @@ def delete_face():
         return jsonify('Face deleted'), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# END FACE MANAGMENT ROUTES #
+
+# SETTINGS ROUTES #
     
-@app.route('/faces', methods=['POST'])
+@app.route('/settings', methods=['POST'])
 @auth_required
 def get_faces():
     try:
@@ -219,27 +310,36 @@ def get_faces():
         faces = user.get('faces', [])
         face_names = [face.get('name') for face in faces if 'name' in face]
 
-        return jsonify({'face_names': face_names}), 200
+        chat_id = user.get('chat_id')
+
+        return jsonify({'faces': face_names, 'cameras': get_cameras(g.username), 'chat_id': chat_id}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/frames', methods=['POST'])
+@app.route('/telegram', methods=['POST'])
 @auth_required
-def get_frames():
-    cameras = get_cameras(g.username)
-    data = []
+def telegram():
+    chat_id = request.form.get('chat_id')
 
-    for camera in cameras:
-        objects = minio_client.list_objects(str(camera), recursive=True)
-        camera_object = {"name": camera, "images": []}
+    if not chat_id:
+        return jsonify({'error': 'Chat ID missing'}), 400
 
-        for obj in objects:
-            url = minio_client.presigned_get_object(str(camera), obj.object_name)
-            camera_object['images'].append({"url": url, "time": obj.object_name.split('.')[0]})
+    try:
+        result = database['accounts'].update_one(
+            {'username': g.username},
+            {'$set': {'chat_id': chat_id}}
+        )
 
-        data.append(camera_object)
+        if result.modified_count > 0:
+            return jsonify({'message': 'Chat ID updated successfully'}), 200
+        else:
+            return jsonify({'message': 'Failed to update Chat ID'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     
-    return jsonify(data)
+# END SETTINGS ROUTES #
+
+# USER ROUTES #
     
 @app.route('/register', methods=['POST'])
 def register():
@@ -260,6 +360,7 @@ def register():
         'username': username,
         'password': hashed_password.decode('utf-8'),
         'session_tokens': [session_token],
+        'chat_id': "",
         'cameras': [],
         'faces': []
     }
@@ -295,5 +396,7 @@ def logout():
     database['accounts'].update_one({'username': g.username}, {'$pull': {'session_tokens': request.form.get('session_token')}})
     return jsonify({'message': 'Logout successful'}), 200
 
+# END USER ROUTES #
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True, threaded=False)

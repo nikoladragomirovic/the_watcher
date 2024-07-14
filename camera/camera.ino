@@ -1,14 +1,14 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_camera.h"
-#include "fd_forward.h"  // Face detection header
-#include "fr_forward.h"  // Face recognition header
+#include "fd_forward.h"
+#include "fr_forward.h"
 #include "esp_log.h"
 
 const char* ssid = "Meda";
 const char* password = "bojananikola";
 
-String serverName = "192.168.0.29";
+String serverName = "192.168.0.27";
 String serverPath = "/upload";
 const int serverPort = 5000;
 
@@ -20,7 +20,7 @@ WiFiClient client;
 #define XCLK_GPIO_NUM      0
 #define SIOD_GPIO_NUM     26
 #define SIOC_GPIO_NUM     27
-
+  
 #define Y9_GPIO_NUM       35
 #define Y8_GPIO_NUM       34
 #define Y7_GPIO_NUM       39
@@ -34,7 +34,9 @@ WiFiClient client;
 #define PCLK_GPIO_NUM     22
 
 const int timerInterval = 1000;
+const int waitInterval = 10000;
 unsigned long previousMillis = 0;
+unsigned long lastSendMillis = 0;
 mtmn_config_t mtmn_config = {0};
 
 void setup() {
@@ -73,7 +75,7 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 16000000;
-  config.pixel_format = PIXFORMAT_JPEG; // Use JPEG for sending photos
+  config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
     config.frame_size = FRAMESIZE_SVGA;
@@ -97,12 +99,14 @@ void setup() {
 
 void loop() {
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= timerInterval) {
+  
+  if (currentMillis - previousMillis >= timerInterval && currentMillis - lastSendMillis >= waitInterval) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) {
       Serial.printf("Captured image: %d x %d, length: %d\n", fb->width, fb->height, fb->len);
       if (faceDetected(fb)) {
         sendPhoto(fb);
+        lastSendMillis = currentMillis;
       }
       esp_camera_fb_return(fb);
     } else {
@@ -151,7 +155,7 @@ void sendPhoto(camera_fb_t *fb) {
   if (client.connect(serverName.c_str(), serverPort)) {
     Serial.println("Connection successful!");    
 
-    String camera_id = "esp32-2";
+    String camera_id = "esp32-1";
 
     String head = "--Nile\r\n"
                   "Content-Disposition: form-data; name=\"camera_id\"\r\n\r\n" 
