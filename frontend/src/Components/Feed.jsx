@@ -27,7 +27,7 @@ const Feed = ({ loading, frames, clearFrame, saveFace }) => {
     );
   };
 
-  const handleSaveFace = async () => {
+  const handleSaveFace = async (frame) => {
     let response = await saveFace(inputValue, frame.cameraId, frame.name);
     if (response === 200) {
       setEditNameMode(-1);
@@ -94,7 +94,7 @@ const Feed = ({ loading, frames, clearFrame, saveFace }) => {
                     />
                     <IoMdSave
                       className="text-3xl cursor-pointer"
-                      onClick={saveFace}
+                      onClick={() => handleSaveFace(frame)}
                     />
                   </div>
                   <p className="text-rose-600 w-full text-center mb-4">
