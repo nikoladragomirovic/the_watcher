@@ -10,12 +10,13 @@ import requests
 import os
 import face_recognition
 import numpy as np
-from io import BytesIO
+from flask_socketio import SocketIO, emit
 import cv2
 from functools import wraps
 
 app = Flask(__name__)
-CORS(app, origins='*')
+CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # GLOBALS #
 
@@ -94,6 +95,7 @@ def upload_image():
 
     camera = database['accounts'].find_one({'cameras': {'$elemMatch': {'id': camera_id}}})
     chat_id = camera['chat_id']
+    username = camera['username']
 
     if 'image' not in request.files:
         return jsonify({'error': 'No image part'}), 400
@@ -130,6 +132,8 @@ def upload_image():
 
         minio_client.put_object(camera_id, filename, file, file_size)
         send_telegram_notification(chat_id, "Someone at your door, visit http://127.0.0.1:3000 to check it out!", image_bytes)
+        socketio.emit('new_frame', {'username': username})
+
         return jsonify({'message': 'Image uploaded successfully', 'filename': filename}), 200
     except Exception as e:
         return str(e)
@@ -399,4 +403,4 @@ def logout():
 # END USER ROUTES #
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)

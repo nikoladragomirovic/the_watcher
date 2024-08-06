@@ -8,9 +8,11 @@
 const char* ssid = "Meda";
 const char* password = "bojananikola";
 
-String serverName = "192.168.0.27";
+String serverName = "192.168.0.35";
 String serverPath = "/upload";
 const int serverPort = 5000;
+
+String camera_id = "esp32-1";
 
 WiFiClient client;
 
@@ -155,8 +157,6 @@ void sendPhoto(camera_fb_t *fb) {
   if (client.connect(serverName.c_str(), serverPort)) {
     Serial.println("Connection successful!");    
 
-    String camera_id = "esp32-1";
-
     String head = "--Nile\r\n"
                   "Content-Disposition: form-data; name=\"camera_id\"\r\n\r\n" 
                   + camera_id + "\r\n"
@@ -189,7 +189,7 @@ void sendPhoto(camera_fb_t *fb) {
     }   
     client.print(tail);
     
-    int timeoutTimer = 10000;
+    int timeoutTimer = 5000;
     long startTimer = millis();
     boolean state = false;
     

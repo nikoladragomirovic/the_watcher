@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Options from "./Options";
 import Settings from "./Settings";
 import Feed from "./Feed";
+import io from "socket.io-client";
 
 const Page = ({ setLoggedIn }) => {
   const [frames, setFrames] = useState([]);
@@ -55,8 +56,32 @@ const Page = ({ setLoggedIn }) => {
 
   useEffect(() => {
     fetchFrames();
-    setInterval(() => fetchFrames(), 10000);
     fetchSettings();
+
+    const username = localStorage.getItem("username");
+
+    if (!username) return;
+
+    const socket = io("http://127.0.0.1:5000");
+
+    socket.on("connect", () => {
+      console.log("WebSocket connected");
+    });
+
+    socket.on("new_frame", (data) => {
+      if (data.username === username) {
+        console.log("WebSocket message received:", data);
+        fetchFrames();
+      }
+    });
+
+    socket.on("disconnect", () => {
+      console.log("WebSocket disconnected");
+    });
+
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   const handleLogOut = async (e) => {
