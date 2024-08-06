@@ -55,6 +55,7 @@ const Page = ({ setLoggedIn }) => {
 
   useEffect(() => {
     fetchFrames();
+    setInterval(() => fetchFrames(), 10000);
     fetchSettings();
   }, []);
 
