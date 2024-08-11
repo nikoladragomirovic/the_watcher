@@ -93,6 +93,9 @@ def upload_image():
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     filename = f"{timestamp}.jpg"
 
+    if not minio_client.bucket_exists(camera_id):
+        minio_client.make_bucket(camera_id)
+
     camera = database['accounts'].find_one({'cameras': {'$elemMatch': {'id': camera_id}}})
     chat_id = camera['chat_id']
     username = camera['username']
@@ -121,9 +124,6 @@ def upload_image():
 
         unknown = face_recognition.face_encodings(image_np)
         results = face_recognition.compare_faces(np.array(encodings), unknown)
-
-        if not minio_client.bucket_exists(camera_id):
-            minio_client.make_bucket(camera_id)
 
         if True in results:
             recognized_face = camera['faces'][results.index(True)]['name']
